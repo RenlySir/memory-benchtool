@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-benchtool"
+version = "0.1.0"
+description = "Functional compatibility and lightweight performance tests for Redis and Tidis"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "redis>=4.5,<7",
+]
+
+[project.scripts]
+memory-benchtool = "memory_benchtool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

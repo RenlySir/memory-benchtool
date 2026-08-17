@@ -1,0 +1,22 @@
+{
+  "targets": [
+    {
+      "name": "redis-local",
+      "product": "redis",
+      "host": "127.0.0.1",
+      "port": 6379,
+      "db": 0,
+      "tls": false,
+      "password_env": "REDIS_PASSWORD"
+    },
+    {
+      "name": "tidis-local",
+      "product": "tidis",
+      "host": "127.0.0.1",
+      "port": 6666,
+      "db": 0,
+      "tls": false,
+      "password_env": "TIDIS_PASSWORD"
+    }
+  ]
+}
