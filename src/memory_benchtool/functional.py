@@ -86,6 +86,117 @@ def case_lua(client, key):
     assert result == "lua-value"
 
 
+def case_string_batch_and_conditions(client, key):
+    first = key("string-batch:first")
+    second = key("string-batch:second")
+    assert client.mset({first: "alpha", second: "beta"}) is True
+    assert client.mget(first, second) == ["alpha", "beta"]
+    assert not client.setnx(first, "replacement")
+    assert client.setnx(key("string-batch:new"), "created")
+    assert client.strlen(first) == 5
+
+
+def case_numeric_operations(client, key):
+    name = key("numeric")
+    assert client.set(name, "10") is True
+    assert client.incrby(name, 5) == 15
+    assert client.decr(name) == 14
+    assert client.decrby(name, 4) == 10
+
+
+def case_key_types_and_exists(client, key):
+    list_key = key("types:list")
+    hash_key = key("types:hash")
+    set_key = key("types:set")
+    client.rpush(list_key, "value")
+    client.hset(hash_key, "field", "value")
+    client.sadd(set_key, "member")
+    assert client.type(list_key) == "list"
+    assert client.type(hash_key) == "hash"
+    assert client.type(set_key) == "set"
+    assert all(client.exists(name) == 1 for name in (list_key, hash_key, set_key))
+
+
+def case_hash_extended(client, key):
+    name = key("hash-extended")
+    assert client.hset(name, mapping={"a": "one", "b": "two"}) == 2
+    assert client.hsetnx(name, "a", "replaced") == 0
+    assert client.hsetnx(name, "c", "three") == 1
+    assert client.hmget(name, "a", "c") == ["one", "three"]
+    assert client.hlen(name) == 3
+    assert bool(client.hexists(name, "b"))
+    assert client.hstrlen(name, "c") == 5
+    assert set(client.hkeys(name)) == {"a", "b", "c"}
+    assert set(client.hvals(name)) == {"one", "two", "three"}
+
+
+def case_list_queue_and_trim(client, key):
+    name = key("list-queue")
+    assert client.lpush(name, "b", "a") == 2
+    assert client.rpush(name, "c", "d") == 4
+    assert client.llen(name) == 4
+    assert client.lindex(name, -1) == "d"
+    assert client.ltrim(name, 1, 2) is True
+    assert client.rpop(name) == "c"
+    assert client.lrange(name, 0, -1) == ["b"]
+
+
+def case_list_insert_and_remove(client, key):
+    name = key("list-insert-remove")
+    assert client.rpush(name, "a", "b", "a", "c") == 4
+    assert client.linsert(name, "BEFORE", "b", "x") == 5
+    assert client.lrem(name, 2, "a") == 2
+    assert client.lrange(name, 0, -1) == ["x", "b", "c"]
+
+
+def case_set_extended(client, key):
+    name = key("set-extended")
+    assert client.sadd(name, "a", "b", "c") == 3
+    assert [bool(value) for value in client.smismember(name, ["a", "missing"])] == [
+        True, False
+    ]
+    assert client.srandmember(name) in {"a", "b", "c"}
+    assert client.scard(name) == 3
+
+
+def case_set_pop_and_remove(client, key):
+    name = key("set-pop-remove")
+    assert client.sadd(name, "a", "b", "c") == 3
+    removed = client.spop(name)
+    assert removed in {"a", "b", "c"}
+    assert not client.sismember(name, removed)
+    assert client.scard(name) == 2
+    remaining = next(iter(client.smembers(name)))
+    assert client.srem(name, remaining) == 1
+    assert client.scard(name) == 1
+
+
+def case_sorted_set_extended(client, key):
+    name = key("zset-extended")
+    assert client.zadd(name, {"low": 1, "middle": 2, "high": 3}) == 3
+    assert client.zcard(name) == 3
+    assert client.zscore(name, "middle") == 2.0
+    assert client.zcount(name, 1, 2) == 2
+    assert client.zrangebyscore(name, 2, 3) == ["middle", "high"]
+    assert client.zrem(name, "middle") == 1
+
+
+def case_container_expiration(client, key):
+    names = {
+        "hash": key("container-expiration:hash"),
+        "list": key("container-expiration:list"),
+        "set": key("container-expiration:set"),
+    }
+    client.hset(names["hash"], "field", "value")
+    client.rpush(names["list"], "value")
+    client.sadd(names["set"], "value")
+    for name in names.values():
+        assert client.expire(name, 5)
+        assert 0 < client.ttl(name) <= 5
+        assert client.persist(name)
+        assert client.ttl(name) == -1
+
+
 def case_bitmap(client, key):
     name = key("bitmap")
     assert client.setbit(name, 10, 1) == 0
@@ -118,6 +229,16 @@ COMMON_CASES: List[tuple[str, Case]] = [
     ("sorted_set", case_sorted_set),
     ("multi_exec", case_multi_exec),
     ("lua", case_lua),
+    ("string_batch_and_conditions", case_string_batch_and_conditions),
+    ("numeric_operations", case_numeric_operations),
+    ("key_types_and_exists", case_key_types_and_exists),
+    ("hash_extended", case_hash_extended),
+    ("list_queue_and_trim", case_list_queue_and_trim),
+    ("list_insert_and_remove", case_list_insert_and_remove),
+    ("set_extended", case_set_extended),
+    ("set_pop_and_remove", case_set_pop_and_remove),
+    ("sorted_set_extended", case_sorted_set_extended),
+    ("container_expiration", case_container_expiration),
 ]
 
 REDIS_NATIVE_CASES: List[tuple[str, Case]] = [

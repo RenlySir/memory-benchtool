@@ -6,10 +6,14 @@
 - Redis 专属能力测试
 - SET/GET 吞吐与延迟采样
 - List、Hash、Set 写入/读取吞吐与延迟采样
+- 百万级数据造数与固定时长读、写、读写混合压测
 - 多目标结果汇总
 - JSON 原始结果与 Markdown 报告生成
 
 工具不会执行 `FLUSHDB`。每轮测试使用随机 key 前缀，并精确删除本轮创建的 key。仍应只在测试实例或隔离数据库上运行。
+
+100 万、500 万、1000 万规模的完整测试方案、矩阵执行和兼容性案例步骤见
+[`docs/scale-test-guide-zh.md`](docs/scale-test-guide-zh.md)。
 
 ## 1. 环境要求
 
@@ -135,6 +139,8 @@ export TIDIS_PASSWORD='replace-with-password'
 - Stream：XADD、XRANGE
 
 当 `product` 为 `tidis` 时，这 3 个能力记为跳过，不会误报为失败。
+
+版本 0.3.0 另增加 10 个共同兼容案例，覆盖 MSET/MGET/SETNX、数值增减、TYPE、Hash 扩展、List 插入与裁剪、Set 扩展、Sorted Set 范围查询和容器 TTL。逐项步骤及预期结果见规模测试手册。
 
 输出文件为 `functional.json`。每个 case 包含状态、耗时和失败错误。只要任一目标存在失败，命令退出码为 `1`。
 

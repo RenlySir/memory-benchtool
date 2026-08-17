@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 from memory_benchtool.benchmark import (
     _counts,
@@ -11,12 +13,106 @@ from memory_benchtool.benchmark import (
 from memory_benchtool.cli import build_parser
 from memory_benchtool.config import Target, load_targets
 from memory_benchtool.functional import (
+    COMMON_CASES,
     DATA_STRUCTURE_CASES,
     case_hash,
     case_list,
     case_set,
 )
 from memory_benchtool.report import render_report
+from memory_benchtool.scale import (
+    cleanup_dataset,
+    run_scale_workload,
+    seed_dataset,
+    validate_dataset_parameters,
+)
+
+
+class ScaleClient:
+    def __init__(self):
+        self.data = {}
+        self.lock = threading.Lock()
+
+    def ping(self):
+        return True
+
+    def exists(self, key):
+        with self.lock:
+            return int(key in self.data)
+
+    def set(self, key, value):
+        with self.lock:
+            self.data[key] = value
+        return True
+
+    def get(self, key):
+        with self.lock:
+            return self.data.get(key)
+
+    def delete(self, *keys):
+        with self.lock:
+            deleted = sum(key in self.data for key in keys)
+            for key in keys:
+                self.data.pop(key, None)
+        return deleted
+
+    def rpush(self, key, *values):
+        with self.lock:
+            current = self.data.setdefault(key, [])
+            current.extend(values)
+            return len(current)
+
+    def llen(self, key):
+        with self.lock:
+            return len(self.data.get(key, []))
+
+    def lindex(self, key, index):
+        with self.lock:
+            return self.data[key][index]
+
+    def hset(self, key, field=None, value=None, mapping=None):
+        with self.lock:
+            current = self.data.setdefault(key, {})
+            values = mapping if mapping is not None else {field: value}
+            created = sum(name not in current for name in values)
+            current.update(values)
+            return created
+
+    def hlen(self, key):
+        with self.lock:
+            return len(self.data.get(key, {}))
+
+    def hget(self, key, field):
+        with self.lock:
+            return self.data[key].get(field)
+
+    def sadd(self, key, *members):
+        with self.lock:
+            current = self.data.setdefault(key, set())
+            before = len(current)
+            current.update(members)
+            return len(current) - before
+
+    def scard(self, key):
+        with self.lock:
+            return len(self.data.get(key, set()))
+
+    def sismember(self, key, member):
+        with self.lock:
+            return int(member in self.data[key])
+
+
+class ScaleTarget:
+    name = "fake"
+
+    def __init__(self):
+        self.client_instance = ScaleClient()
+
+    def client(self):
+        return self.client_instance
+
+    def public_dict(self):
+        return {"name": self.name, "product": "redis", "endpoint": "fake:6379"}
 
 
 class ConfigTests(unittest.TestCase):
@@ -154,12 +250,33 @@ class CliTests(unittest.TestCase):
         ])
         self.assertEqual(args.structures, ["hash", "set"])
 
+    def test_scale_workload_defaults(self):
+        args = build_parser().parse_args([
+            "workload", "--config", "targets.json", "--structure", "hash",
+            "--rows", "5000000", "--dataset-id", "scale-v1", "--mode", "mixed",
+            "--clients", "256",
+        ])
+        self.assertEqual(args.rows_per_key, 1000)
+        self.assertEqual(args.value_size, 128)
+        self.assertEqual(args.read_ratio, 50)
+        self.assertEqual(args.duration_seconds, 10.0)
+
 
 class FunctionalTests(unittest.TestCase):
     def test_data_structure_group_contains_list_hash_set(self):
         self.assertEqual(
             [name for name, _ in DATA_STRUCTURE_CASES], ["hash", "list", "set"]
         )
+
+    def test_ten_extended_compatibility_cases_are_registered(self):
+        extended = {
+            "string_batch_and_conditions", "numeric_operations",
+            "key_types_and_exists", "hash_extended", "list_queue_and_trim",
+            "list_insert_and_remove", "set_extended", "set_pop_and_remove",
+            "sorted_set_extended", "container_expiration",
+        }
+        self.assertEqual(extended, {name for name, _ in COMMON_CASES} & extended)
+        self.assertEqual(len(COMMON_CASES), 18)
 
     def test_hash_case(self):
         class Client:
@@ -216,6 +333,45 @@ class FunctionalTests(unittest.TestCase):
                 return 2
 
         case_set(Client(), lambda name: name)
+
+
+class ScaleTests(unittest.TestCase):
+    def test_dataset_parameter_validation(self):
+        validate_dataset_parameters("set", 10_000_000, 1000, 128, "scale-v1")
+        with self.assertRaisesRegex(ValueError, "dataset-id"):
+            validate_dataset_parameters("set", 1, 1, 8, "invalid id")
+
+    @patch("memory_benchtool.scale.capacity_snapshot")
+    def test_seed_resume_workload_and_cleanup_for_all_structures(self, snapshot):
+        snapshot.return_value = {
+            "disk_free_gib": 100.0, "memory_available_gib": 100.0
+        }
+        for structure in ("list", "hash", "set"):
+            target = ScaleTarget()
+            seed = seed_dataset(
+                target, structure, 5, 2, 20, "scale-v1", 2, 1, 1
+            )
+            self.assertEqual(seed["status"], "completed")
+            self.assertEqual(seed["created_rows"], 5)
+            resumed = seed_dataset(
+                target, structure, 5, 2, 20, "scale-v1", 2, 1, 1
+            )
+            self.assertEqual(resumed["existing_rows"], 5)
+
+            result = run_scale_workload(
+                target, structure, 5, 2, 20, "scale-v1", "mixed", 2,
+                0.01, 0, 50,
+            )
+            self.assertEqual(result["status"], "completed")
+            self.assertGreater(result["measurement"]["operations"], 0)
+            self.assertIsNotNone(result["measurement"]["read"])
+            self.assertIsNotNone(result["measurement"]["write"])
+
+            cleanup = cleanup_dataset(
+                target, structure, 5, 2, 20, "scale-v1"
+            )
+            self.assertEqual(cleanup["deleted_shard_keys"], 3)
+            self.assertEqual(target.client_instance.data, {})
 
 
 class ReportTests(unittest.TestCase):
