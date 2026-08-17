@@ -12,7 +12,8 @@ def _metric(result: Dict[str, Any], operation: str, field: str) -> str:
 
 
 def render_report(functional: List[Dict[str, Any]],
-                  benchmarks: List[Dict[str, Any]], parameters: Dict[str, int]) -> str:
+                  benchmarks: List[Dict[str, Any]], parameters: Dict[str, Any],
+                  structure_benchmarks: List[Dict[str, Any]] = None) -> str:
     benchmark_by_name = {item["target"]["name"]: item for item in benchmarks}
     lines = [
         "# Redis 与 Tidis 测试报告",
@@ -53,6 +54,46 @@ def render_report(functional: List[Dict[str, Any]],
             f'{_metric(benchmark, "get", "p50")} | {_metric(benchmark, "get", "p95")} | '
             f'{_metric(benchmark, "get", "p99")} |'
         )
+
+    if structure_benchmarks:
+        lines.extend([
+            "",
+            "## List、Hash、Set 性能采样",
+            "",
+            "每种数据结构先执行写操作，再对同一批 key 执行读操作并校验结果。",
+            "",
+            "| 目标 | 数据结构 | 写命令 | 写 ops/s | 写 p50 ms | 写 p95 ms | 写 p99 ms | 读命令 | 读 ops/s | 读 p50 ms | 读 p95 ms | 读 p99 ms | 清理 key |",
+            "|---|---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|",
+        ])
+        for result in structure_benchmarks:
+            target = result["target"]
+            if "error" in result:
+                lines.append(
+                    f'| {target["name"]} | N/A | N/A | N/A | N/A | N/A | N/A | '
+                    "N/A | N/A | N/A | N/A | N/A | N/A |"
+                )
+                continue
+            for name, metrics in result["structures"].items():
+                if "error" in metrics:
+                    lines.append(
+                        f'| {target["name"]} | {name} | {metrics["write_command"]} | '
+                        f'N/A | N/A | N/A | N/A | {metrics["read_command"]} | '
+                        "N/A | N/A | N/A | N/A | N/A |"
+                    )
+                    continue
+                lines.append(
+                    f'| {target["name"]} | {name} | {metrics["write_command"]} | '
+                    f'{_metric(metrics, "write", "throughput")} | '
+                    f'{_metric(metrics, "write", "p50")} | '
+                    f'{_metric(metrics, "write", "p95")} | '
+                    f'{_metric(metrics, "write", "p99")} | '
+                    f'{metrics["read_command"]} | '
+                    f'{_metric(metrics, "read", "throughput")} | '
+                    f'{_metric(metrics, "read", "p50")} | '
+                    f'{_metric(metrics, "read", "p95")} | '
+                    f'{_metric(metrics, "read", "p99")} | '
+                    f'{metrics["keys_deleted"]} |'
+                )
 
     lines.extend([
         "",

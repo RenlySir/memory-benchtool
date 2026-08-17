@@ -5,10 +5,15 @@
 - 基础命令兼容性测试
 - Redis 专属能力测试
 - SET/GET 吞吐与延迟采样
+- List、Hash、Set 写入/读取吞吐与延迟采样
+- 百万级数据造数与固定时长读、写、读写混合压测
 - 多目标结果汇总
 - JSON 原始结果与 Markdown 报告生成
 
 工具不会执行 `FLUSHDB`。每轮测试使用随机 key 前缀，并精确删除本轮创建的 key。仍应只在测试实例或隔离数据库上运行。
+
+100 万、500 万、1000 万规模的完整测试方案、矩阵执行和兼容性案例步骤见
+[`docs/scale-test-guide-zh.md`](docs/scale-test-guide-zh.md)。
 
 ## 1. 环境要求
 
@@ -135,6 +140,8 @@ export TIDIS_PASSWORD='replace-with-password'
 
 当 `product` 为 `tidis` 时，这 3 个能力记为跳过，不会误报为失败。
 
+版本 0.3.0 另增加 10 个共同兼容案例，覆盖 MSET/MGET/SETNX、数值增减、TYPE、Hash 扩展、List 插入与裁剪、Set 扩展、Sorted Set 范围查询和容器 TTL。逐项步骤及预期结果见规模测试手册。
+
 输出文件为 `functional.json`。每个 case 包含状态、耗时和失败错误。只要任一目标存在失败，命令退出码为 `1`。
 
 ## 5. 轻量性能测试
@@ -170,6 +177,32 @@ export TIDIS_PASSWORD='replace-with-password'
 
 这不是极限容量测试：结果包含 Python、线程调度、客户端和网络开销。比较两个产品时，应保持机器规格、客户端位置、并发数、value 大小和持久化配置一致。
 
+### List、Hash、Set 性能测试
+
+运行全部三种数据结构：
+
+```bash
+.venv/bin/memory-benchtool structures \
+  --config targets.local.json \
+  --operations 10000 \
+  --clients 16 \
+  --value-size 128 \
+  --structures list,hash,set \
+  --output-dir results/structures
+```
+
+每种结构的写入和读取命令如下：
+
+| 数据结构 | 写入命令 | 读取命令 | 读取校验 |
+|---|---|---|---|
+| List | RPUSH | LINDEX key 0 | 返回值必须等于写入 value |
+| Hash | HSET key field value | HGET key field | 返回值必须等于写入 value |
+| Set | SADD | SISMEMBER | 必须确认写入的 member 存在 |
+
+每次操作使用一个独立 key，以避免同一容器热点干扰基础命令开销比较。每种结构均先完成写阶段，再读取同一批 key；任何返回值不匹配都会记录为失败。测试结束后精确删除创建的 key。
+
+`--structures` 可以选择子集，例如 `--structures list,hash`。输出文件为 `structures.json`，包含每种结构的写/读命令、操作数、吞吐、mean、p50、p95、p99、max、清理数量和错误信息。
+
 ## 6. 一次运行全部测试并生成报告
 
 ```bash
@@ -187,10 +220,11 @@ export TIDIS_PASSWORD='replace-with-password'
 results/20260817/
 ├── functional.json
 ├── benchmark.json
+├── structures.json
 └── report.md
 ```
 
-`report.md` 汇总每个目标的功能通过数、失败数、跳过数，以及 SET/GET 吞吐和 p50/p95/p99 延迟。
+`report.md` 汇总每个目标的功能通过数、失败数、跳过数，SET/GET 吞吐和延迟，以及 List、Hash、Set 的写入/读取吞吐和延迟。
 
 退出码：
 
