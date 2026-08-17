@@ -373,6 +373,40 @@ class ScaleTests(unittest.TestCase):
             self.assertEqual(cleanup["deleted_shard_keys"], 3)
             self.assertEqual(target.client_instance.data, {})
 
+    @patch("memory_benchtool.scale.capacity_snapshot")
+    def test_workload_counts_request_errors_and_retries_cleanup(self, snapshot):
+        snapshot.return_value = {
+            "disk_free_gib": 100.0, "memory_available_gib": 100.0
+        }
+
+        class FlakyClient(ScaleClient):
+            read_failures = 2
+            cleanup_failures = 1
+
+            def lindex(self, key, index):
+                if self.read_failures:
+                    self.read_failures -= 1
+                    raise TimeoutError("simulated timeout")
+                return super().lindex(key, index)
+
+            def delete(self, *keys):
+                if (self.cleanup_failures
+                        and keys[0].startswith("memory-benchtool-workload:")):
+                    self.cleanup_failures -= 1
+                    raise TimeoutError("simulated cleanup timeout")
+                return super().delete(*keys)
+
+        target = ScaleTarget()
+        target.client_instance = FlakyClient()
+        seed_dataset(target, "list", 5, 2, 20, "flaky", 1, 1, 1)
+        result = run_scale_workload(
+            target, "list", 5, 2, 20, "flaky", "read", 1, 0.01, 0, 100
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["measurement"]["error_count"], 2)
+        self.assertGreater(result["measurement"]["operations"], 0)
+        self.assertNotIn("cleanup_errors", result)
+
 
 class ReportTests(unittest.TestCase):
     def test_report_contains_target_and_metrics(self):

@@ -74,13 +74,15 @@ for structure in $STRUCTURES; do
           if result_completed "$result_dir/workload.json"; then
             continue
           fi
-          "$TOOL_BIN" workload \
-            --config "$CONFIG" --output-dir "$result_dir" \
-            --structure "$structure" --rows "$rows" \
-            --rows-per-key "$ROWS_PER_KEY" --value-size "$VALUE_SIZE" \
-            --dataset-id "$DATASET_ID" --mode "$mode" --clients "$clients" \
-            --duration-seconds "$DURATION_SECONDS" \
-            --warmup-seconds "$WARMUP_SECONDS" --read-ratio 50
+          if ! "$TOOL_BIN" workload \
+              --config "$CONFIG" --output-dir "$result_dir" \
+              --structure "$structure" --rows "$rows" \
+              --rows-per-key "$ROWS_PER_KEY" --value-size "$VALUE_SIZE" \
+              --dataset-id "$DATASET_ID" --mode "$mode" --clients "$clients" \
+              --duration-seconds "$DURATION_SECONDS" \
+              --warmup-seconds "$WARMUP_SECONDS" --read-ratio 50; then
+            echo "workload failed; recorded result at $result_dir" >&2
+          fi
         done
       done
     done

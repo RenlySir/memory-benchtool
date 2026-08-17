@@ -67,6 +67,12 @@ def summarize(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "latency_p99_ms_median": round(statistics.median(
                 item["overall_latency_ms"]["p99"] for item in measurements
             ), 3),
+            "error_count_median": round(statistics.median(
+                item.get("error_count", 0) for item in measurements
+            ), 1),
+            "error_rate_percent_median": round(statistics.median(
+                item.get("error_rate_percent", 0) for item in measurements
+            ), 4),
         })
     return rows
 
@@ -77,8 +83,8 @@ def render_markdown(rows: List[Dict[str, Any]], errors: List[str]) -> str:
         "",
         "结果按目标、结构、数据量、并发和模式分组；吞吐与延迟均取各轮中位数。",
         "",
-        "| 目标 | 结构 | 数据量 | 并发 | 模式 | 轮数 | 吞吐 ops/s | p50 ms | p95 ms | p99 ms |",
-        "|---|---|---:|---:|---|---:|---:|---:|---:|---:|",
+        "| 目标 | 结构 | 数据量 | 并发 | 模式 | 轮数 | 吞吐 ops/s | p50 ms | p95 ms | p99 ms | 错误率 |",
+        "|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
@@ -86,7 +92,7 @@ def render_markdown(rows: List[Dict[str, Any]], errors: List[str]) -> str:
             f"{row['clients']} | {row['mode']} | {row['rounds']} | "
             f"{row['throughput_ops_per_second_median']} | "
             f"{row['latency_p50_ms_median']} | {row['latency_p95_ms_median']} | "
-            f"{row['latency_p99_ms_median']} |"
+            f"{row['latency_p99_ms_median']} | {row['error_rate_percent_median']}% |"
         )
     lines.extend(["", "## 异常记录", ""])
     if errors:

@@ -272,18 +272,21 @@ def _write_row(client, data_structure: str, key: str, worker_id: int,
     value = "w" * value_size
     if data_structure == "list":
         result = client.rpush(key, value)
-        expected = operation_index + 1
+        matched = int(result) >= 1
+        expected = "a positive list length"
     elif data_structure == "hash":
         result = client.hset(key, str(operation_index), value)
-        expected = 1
+        matched = int(result) == 1
+        expected = "1"
     else:
         member_id = worker_id * 1_000_000_000 + operation_index
         result = client.sadd(key, _set_member(member_id, value_size))
-        expected = 1
-    if int(result) != expected:
+        matched = int(result) == 1
+        expected = "1"
+    if not matched:
         raise AssertionError(
             f"{data_structure} workload write returned {result!r}, "
-            f"expected {expected!r}"
+            f"expected {expected}"
         )
 
 
@@ -292,30 +295,31 @@ def _worker_phase(target: Target, dataset_id: str, data_structure: str,
                   mode: str, read_ratio: int, worker_id: int,
                   run_id: str, start_event: threading.Event,
                   stop_event: threading.Event,
-                  deadline: List[float]) -> Dict[str, List[float]]:
+                  deadline: List[float]) -> Dict[str, Any]:
     client = target.client()
     read_latencies: List[float] = []
     write_latencies: List[float] = []
+    errors: Dict[str, int] = {}
     write_key = (
         f"memory-benchtool-workload:{target.name}:{dataset_id}:"
         f"{data_structure}:{run_id}:{worker_id}"
     )
     operation_index = 0
     start_event.wait()
-    try:
-        while not stop_event.is_set() and time.perf_counter() < deadline[0]:
-            if mode == "read":
-                operation = "read"
-            elif mode == "write":
-                operation = "write"
-            else:
-                operation = (
-                    "read"
-                    if (operation_index + worker_id) % 100 < read_ratio
-                    else "write"
-                )
+    while not stop_event.is_set() and time.perf_counter() < deadline[0]:
+        if mode == "read":
+            operation = "read"
+        elif mode == "write":
+            operation = "write"
+        else:
+            operation = (
+                "read"
+                if (operation_index + worker_id) % 100 < read_ratio
+                else "write"
+            )
 
-            started = time.perf_counter_ns()
+        started = time.perf_counter_ns()
+        try:
             if operation == "read":
                 row_id = (
                     worker_id * 104729 + operation_index * 8191
@@ -338,17 +342,22 @@ def _worker_phase(target: Target, dataset_id: str, data_structure: str,
                     data_structure,
                     write_key,
                     worker_id,
-                    len(write_latencies),
+                    operation_index,
                     value_size,
                 )
                 write_latencies.append(
                     (time.perf_counter_ns() - started) / 1_000_000
                 )
-            operation_index += 1
-    except Exception:
-        stop_event.set()
-        raise
-    return {"read": read_latencies, "write": write_latencies}
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc) or 'operation failed'}"
+            errors[error] = errors.get(error, 0) + 1
+        operation_index += 1
+    return {
+        "read": read_latencies,
+        "write": write_latencies,
+        "attempted_operations": operation_index,
+        "errors": errors,
+    }
 
 
 def _latency_metrics(latencies: List[float], duration: float) -> Optional[Dict[str, Any]]:
@@ -369,7 +378,7 @@ def _latency_metrics(latencies: List[float], duration: float) -> Optional[Dict[s
 
 def _cleanup_workload_keys(target: Target, dataset_id: str,
                            data_structure: str, run_id: str,
-                           clients: int) -> int:
+                           clients: int) -> Tuple[int, List[str]]:
     keys = [
         f"memory-benchtool-workload:{target.name}:{dataset_id}:"
         f"{data_structure}:{run_id}:{worker_id}"
@@ -377,9 +386,20 @@ def _cleanup_workload_keys(target: Target, dataset_id: str,
     ]
     client = target.client()
     deleted = 0
-    for start in range(0, len(keys), 100):
-        deleted += int(client.delete(*keys[start:start + 100]))
-    return deleted
+    errors = []
+    for key in keys:
+        last_error = None
+        for attempt in range(3):
+            try:
+                deleted += int(client.delete(key))
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                time.sleep(0.2 * (attempt + 1))
+        if last_error:
+            errors.append(f"{key}: {last_error}")
+    return deleted, errors
 
 
 def _timed_phase(target: Target, dataset_id: str, data_structure: str,
@@ -423,9 +443,19 @@ def _timed_phase(target: Target, dataset_id: str, data_structure: str,
             latency for item in worker_results for latency in item["write"]
         ]
         all_latencies = read_latencies + write_latencies
+        attempted = sum(item["attempted_operations"] for item in worker_results)
+        error_counts: Dict[str, int] = {}
+        for item in worker_results:
+            for error, count in item["errors"].items():
+                error_counts[error] = error_counts.get(error, 0) + count
+        error_count = sum(error_counts.values())
         return {
             "duration_seconds": round(elapsed, 4),
             "operations": len(all_latencies),
+            "attempted_operations": attempted,
+            "error_count": error_count,
+            "error_rate_percent": round(error_count / attempted * 100, 4) if attempted else 0,
+            "errors": error_counts,
             "throughput_ops_per_second": round(len(all_latencies) / elapsed, 1),
             "read": _latency_metrics(read_latencies, elapsed),
             "write": _latency_metrics(write_latencies, elapsed),
@@ -518,17 +548,26 @@ def run_scale_workload(target: Target, data_structure: str, rows: int,
             duration_seconds,
             run_id,
         )
-        result["status"] = "completed"
+        if result["measurement"]["operations"]:
+            result["status"] = "completed"
+        else:
+            result["status"] = "failed"
+            result["error"] = "no operations completed successfully"
     except Exception as exc:
         result["status"] = "failed"
         result["error"] = f"{type(exc).__name__}: {exc}"
     finally:
-        result["warmup_keys_deleted"] = _cleanup_workload_keys(
+        warmup_deleted, warmup_errors = _cleanup_workload_keys(
             target, dataset_id, data_structure, warmup_id, clients
         )
-        result["measurement_keys_deleted"] = _cleanup_workload_keys(
+        measurement_deleted, measurement_errors = _cleanup_workload_keys(
             target, dataset_id, data_structure, run_id, clients
         )
+        result["warmup_keys_deleted"] = warmup_deleted
+        result["measurement_keys_deleted"] = measurement_deleted
+        cleanup_errors = warmup_errors + measurement_errors
+        if cleanup_errors:
+            result["cleanup_errors"] = cleanup_errors
     return result
 
 

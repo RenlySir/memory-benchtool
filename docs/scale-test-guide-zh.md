@@ -24,7 +24,7 @@
 - 每次读操作校验返回值，避免把错误响应计入成功吞吐。
 - 写测试使用独立临时容器，测试结束后精确删除，不改变基础数据规模。
 - 混合测试按 50:50 确定性分配读写请求，并分别统计读、写指标。
-- 输出 mean、p50、p95、p99、max 延迟和 ops/s。
+- 输出 mean、p50、p95、p99、max 延迟、成功 ops/s、错误数和错误率。
 - 不使用 pipeline，每次操作都是一次独立 Redis 协议往返。
 - 造数支持续跑，并在每批数据前检查磁盘和可用内存安全阈值。
 
@@ -221,7 +221,7 @@ python3 scripts/summarize-scale-results.py \
 - `scale-summary.csv`：便于电子表格分析的完整指标。
 - `scale-summary.md`：各场景中位数表格。
 
-每个 `workload.json` 保留 target、数据规模、结构、并发、模式、实际时长、操作数、吞吐，以及 overall/read/write 的 mean、p50、p95、p99、max 延迟。
+每个 `workload.json` 保留 target、数据规模、结构、并发、模式、实际时长、尝试/成功操作数、错误数、错误率、成功吞吐，以及 overall/read/write 的 mean、p50、p95、p99、max 延迟。单个请求超时或命令错误会计入错误率，其他 worker 继续到测量截止时间。
 
 ## 9. 新增兼容性测试案例
 
