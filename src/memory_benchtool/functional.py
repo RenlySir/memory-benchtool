@@ -105,12 +105,16 @@ def case_stream(client, key):
     assert client.xrange(name) == [(entry_id, {"event": "created"})]
 
 
-COMMON_CASES: List[tuple[str, Case]] = [
-    ("string_and_expiration", case_string_and_expiration),
-    ("expiration_eventually_removes_key", case_expiration_eventually_removes_key),
+DATA_STRUCTURE_CASES: List[tuple[str, Case]] = [
     ("hash", case_hash),
     ("list", case_list),
     ("set", case_set),
+]
+
+COMMON_CASES: List[tuple[str, Case]] = [
+    ("string_and_expiration", case_string_and_expiration),
+    ("expiration_eventually_removes_key", case_expiration_eventually_removes_key),
+    *DATA_STRUCTURE_CASES,
     ("sorted_set", case_sorted_set),
     ("multi_exec", case_multi_exec),
     ("lua", case_lua),

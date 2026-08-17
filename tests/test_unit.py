@@ -3,9 +3,19 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from memory_benchtool.benchmark import _counts, percentile
+from memory_benchtool.benchmark import (
+    _counts,
+    percentile,
+    run_data_structure_benchmarks,
+)
+from memory_benchtool.cli import build_parser
 from memory_benchtool.config import Target, load_targets
-from memory_benchtool.functional import case_set
+from memory_benchtool.functional import (
+    DATA_STRUCTURE_CASES,
+    case_hash,
+    case_list,
+    case_set,
+)
 from memory_benchtool.report import render_report
 
 
@@ -38,8 +48,156 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(percentile([1, 2, 3, 4], 0.50), 2)
         self.assertEqual(percentile([1, 2, 3, 4], 0.99), 4)
 
+    def test_list_hash_set_benchmarks_validate_reads_and_cleanup(self):
+        class Client:
+            def __init__(self):
+                self.data = {}
+
+            def ping(self):
+                return True
+
+            def rpush(self, key, value):
+                self.data[key] = [value]
+                return 1
+
+            def lindex(self, key, index):
+                return self.data[key][index]
+
+            def hset(self, key, field, value):
+                self.data[key] = {field: value}
+                return 1
+
+            def hget(self, key, field):
+                return self.data[key][field]
+
+            def sadd(self, key, value):
+                self.data[key] = {value}
+                return 1
+
+            def sismember(self, key, value):
+                return int(value in self.data[key])
+
+            def delete(self, *keys):
+                deleted = sum(key in self.data for key in keys)
+                for key in keys:
+                    self.data.pop(key, None)
+                return deleted
+
+        class FakeTarget:
+            name = "fake"
+            client_instance = Client()
+
+            def client(self):
+                return self.client_instance
+
+            def public_dict(self):
+                return {"name": self.name, "product": "redis", "endpoint": "fake:6379"}
+
+        result = run_data_structure_benchmarks(
+            FakeTarget(), 3, 1, 8, ["list", "hash", "set"]
+        )
+
+        self.assertEqual(list(result["structures"]), ["list", "hash", "set"])
+        for name, commands in {
+            "list": ("RPUSH", "LINDEX"),
+            "hash": ("HSET", "HGET"),
+            "set": ("SADD", "SISMEMBER"),
+        }.items():
+            metrics = result["structures"][name]
+            self.assertEqual(
+                (metrics["write_command"], metrics["read_command"]), commands
+            )
+            self.assertEqual(metrics["write"]["operations"], 3)
+            self.assertEqual(metrics["read"]["operations"], 3)
+            self.assertEqual(metrics["keys_deleted"], 3)
+        self.assertEqual(FakeTarget.client_instance.data, {})
+
+    def test_data_structure_read_mismatch_is_reported(self):
+        class Client:
+            def ping(self):
+                return True
+
+            def rpush(self, key, value):
+                return 1
+
+            def lindex(self, key, index):
+                return "wrong-value"
+
+            def delete(self, *keys):
+                return len(keys)
+
+        class FakeTarget:
+            name = "fake"
+
+            def client(self):
+                return Client()
+
+            def public_dict(self):
+                return {"name": self.name, "product": "redis", "endpoint": "fake:6379"}
+
+        result = run_data_structure_benchmarks(
+            FakeTarget(), 1, 1, 8, ["list"]
+        )
+        self.assertIn("read validation failed", result["structures"]["list"]["error"])
+
+
+class CliTests(unittest.TestCase):
+    def test_structures_default_to_list_hash_set(self):
+        args = build_parser().parse_args([
+            "structures", "--config", "targets.json"
+        ])
+        self.assertEqual(args.structures, ["list", "hash", "set"])
+
+    def test_structures_can_be_selected(self):
+        args = build_parser().parse_args([
+            "structures", "--config", "targets.json", "--structures", "hash,set"
+        ])
+        self.assertEqual(args.structures, ["hash", "set"])
+
 
 class FunctionalTests(unittest.TestCase):
+    def test_data_structure_group_contains_list_hash_set(self):
+        self.assertEqual(
+            [name for name, _ in DATA_STRUCTURE_CASES], ["hash", "list", "set"]
+        )
+
+    def test_hash_case(self):
+        class Client:
+            def hset(self, *args, **kwargs):
+                return 2
+
+            def hget(self, *args):
+                return "1"
+
+            def hincrby(self, *args):
+                return 5
+
+            def hgetall(self, *args):
+                return {"a": "5", "b": "2"}
+
+            def hdel(self, *args):
+                return 1
+
+        case_hash(Client(), lambda name: name)
+
+    def test_list_case(self):
+        class Client:
+            ranges = iter([["a", "b", "c"], ["B", "c"]])
+
+            def rpush(self, *args):
+                return 3
+
+            def lrange(self, *args):
+                return next(self.ranges)
+
+            def lpop(self, *args):
+                return "a"
+
+            def lset(self, *args):
+                return True
+
+        case_list(Client(), lambda name: name)
+
     def test_set_membership_accepts_integer_response(self):
         class Client:
             def sadd(self, *args):
@@ -78,6 +236,34 @@ class ReportTests(unittest.TestCase):
                                {"operations": 100, "clients": 2, "value_size": 16})
         self.assertIn("redis", report)
         self.assertIn("100.0", report)
+
+    def test_report_contains_data_structure_metrics(self):
+        target = {"name": "redis", "product": "redis", "endpoint": "localhost:6379"}
+        phase = {
+            "throughput_ops_per_second": 100.0,
+            "latency_ms": {"p50": 1.0, "p95": 2.0, "p99": 3.0},
+        }
+        structures = [{
+            "target": target,
+            "structures": {
+                "list": {
+                    "write_command": "RPUSH",
+                    "read_command": "LINDEX",
+                    "write": phase,
+                    "read": phase,
+                    "keys_deleted": 10,
+                }
+            },
+        }]
+        report = render_report(
+            [],
+            [],
+            {"operations": 10, "clients": 1, "value_size": 8},
+            structures,
+        )
+        self.assertIn("List、Hash、Set 性能采样", report)
+        self.assertIn("RPUSH", report)
+        self.assertIn("LINDEX", report)
 
 
 if __name__ == "__main__":
